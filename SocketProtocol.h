@@ -27,7 +27,7 @@ typedef struct
 
 
 #define SOCKET_PACKET_SIZE (sizeof(socket_packet))
-#define FILE_PACKET_SIZE   (1024*sizeof(BYTE)) //过大的字节数会导致包的分片,从而降低传输速度,tcp最大为1452,udp最大为548;
+#define FILE_PACKET_SIZE   (10*1024*sizeof(BYTE)) //过大的字节数会导致包的分片,从而降低传输速度,tcp最大为1460,udp最大为548;
 
 typedef void(*RECV_CALLBACK)(SOCKET sock, void* param);
 
@@ -44,7 +44,8 @@ typedef void(*RECV_CALLBACK)(SOCKET sock, void* param);
 #define FILE_UPLOAD_BEGIN	FILE_BASE_0 + 2
 #define FILE_UPLOAD_END		FILE_BASE_0 + 3
 #define FILE_UPLOAD_DATA	FILE_BASE_0 + 4
-#define FILE_UPLOAD_ERROR   FILE_BASE_0 + 5
+#define FILE_UPLOAD_ERROR   FILE_BASE_0 + 5 //这个标志是代表客户端读取文件数据出错;
+#define FILE_TRANSFER_OVER  FILE_BASE_0 + 6	//这个标志代表文件传输socket断开,可能是正常断开，也可能是出现错误;
 
 #define BROADCAST_PORT			8384
 #define BROADCAST_REQUEST_PORT	8387
@@ -55,6 +56,8 @@ typedef void(*RECV_CALLBACK)(SOCKET sock, void* param);
 extern psocket_packet socket_paket_alloc();
 //记得要释放;
 extern pfile_packet file_packet_alloc();
+
+extern int _closesocket(SOCKET sock);
 
 #ifndef __cplusplus
 }

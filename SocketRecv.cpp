@@ -10,11 +10,10 @@ SocketRecv::SocketRecv()
 
 SocketRecv::~SocketRecv()
 {
-	DeleteCriticalSection(&this->listlock);
-	DeleteCriticalSection(&this->mexecutelistlock);
 	CloseHandle(this->check_stop);
 	CExecute* CCExcute;
 	//此时无需再检查接对象是否活着,因为执行到这一步已经说明全都死了;
+	EnterCriticalSection(&this->mexecutelistlock);
 	for (;;)
 	{
 		if (this->mexecutelist.empty())
@@ -24,6 +23,9 @@ SocketRecv::~SocketRecv()
 		CCExcute->stopserver();
 		delete(CCExcute);
 	}
+	LeaveCriticalSection(&this->mexecutelistlock);
+	DeleteCriticalSection(&this->listlock);
+	DeleteCriticalSection(&this->mexecutelistlock);
 }
 
 void SocketRecv::insertlist(SOCKET sock, sockaddr_in* _sockaddr)
@@ -48,11 +50,23 @@ sockaddr_in* SocketRecv::getlist(SOCKET sock)
 void SocketRecv::removelist(SOCKET sock)
 {
 	std::map<SOCKET, sockaddr_in*>::iterator iter;
+	sockaddr_in* _sockaddr;
 	EnterCriticalSection(&this->listlock);
 	iter = this->mlist.find(sock);
-	free(iter->second);
+	if (iter == this->mlist.end())
+	{
+		LeaveCriticalSection(&this->listlock);
+		goto mexit;
+	}
+	_sockaddr = iter->second;
 	this->mlist.erase(iter);
+	
+	free(_sockaddr);
+	printf("remove the socket %d", sock);
+	//closesocket(sock);
+mexit:
 	LeaveCriticalSection(&this->listlock);
+	return;
 }
 
 void SocketRecv::insetexecuter(CExecute* pCExecute)
@@ -89,6 +103,15 @@ bool SocketRecv::startserver()
 
 void SocketRecv::stopserver()
 {
+	printf("正在终止接收服务.. ..\r\n");
+	SetEvent(this->check_stop);
+
+
+	if (INVALID_HANDLE_VALUE != this->check_status)
+	{
+		WaitForSingleObject(this->check_status, INFINITE);
+		CloseHandle(this->check_status);
+	}
 
 	closesocket(this->socket_id);
 	
@@ -98,14 +121,8 @@ void SocketRecv::stopserver()
 		CloseHandle(this->server_thread);
 	}
 
-	SetEvent(this->check_stop);
+	printf("接收服务停止\r\n");
 
-	
-	if (INVALID_HANDLE_VALUE != this->check_status)
-	{
-		WaitForSingleObject(this->check_status, INFINITE);
-		CloseHandle(this->check_status);
-	}
 	return;
 }
 
@@ -117,7 +134,7 @@ DWORD WINAPI SocketRecv::checks_tatus_proc(void* param)
 	//五秒轮询一次
 	while (WaitForSingleObject(server->check_stop, 5000)!=WAIT_OBJECT_0)
 	{
-		printf("检查接收者状态... ...\r\n");
+		//printf("检查接收者状态... ...\r\n");
 		EnterCriticalSection(&server->mexecutelistlock);
 		for (iter = server->mexecutelist.begin();
 			iter != server->mexecutelist.end();)
@@ -163,10 +180,15 @@ DWORD WINAPI SocketRecv::server_thread_proc(void* param)
 		{
 			sock = accept(server->socket_id, (sockaddr*)&_sockaddr, &socklen);
 			
+			if (sock == INVALID_SOCKET)
+			{
+				break;
+			}
+
 			EnterCriticalSection(&server->m_cs);
 			if (server->recv_callback[CALLBACK_RECV])
 			{
-				printf("开启一个接收链接:%s\r\n", inet_ntoa(_sockaddr.sin_addr));
+				printf("开启一个接收链接:%d %s\r\n", sock, inet_ntoa(_sockaddr.sin_addr));
 				server->insertlist(sock, &_sockaddr);
 				server->recv_callback[CALLBACK_RECV](sock, server);
 			}
@@ -185,7 +207,11 @@ DWORD WINAPI SocketRecv::server_thread_proc(void* param)
 
 void RecvCallBackProc(SOCKET sock, void* param)
 {
+	int nRecvBuf = FILE_PACKET_SIZE*FILE_PACKET_SIZE;
 	SocketRecv* CSocketRecv = (SocketRecv*)param;
+
+	//设置接收缓存区为1M;
+	setsockopt(sock, SOL_SOCKET, SO_RCVBUF, (const char*)&nRecvBuf, sizeof(int));
 	CExecute* CCExecute = new CExecute(sock);
 	if (!CCExecute->startserver())
 	{
@@ -265,6 +291,8 @@ void CExecute::stopserver()
 	{
 		WaitForSingleObject(this->mdatamanager, INFINITE);
 	}
+
+	printf("处理服务停止\r\n");
 	return;
 }
 
@@ -303,19 +331,24 @@ DWORD WINAPI CExecute::DataManageThread(void* param)
 	pSocketRecv->AddRef();
 	while (true)
 	{
-		reslt = WaitForMultipleObjects(2, _event, 0, INFINITE);
+		//reslt = WaitForMultipleObjects(2, _event, 0, INFINITE);
+		//三秒轮询一次;
+		reslt = WaitForSingleObject(CCExecute->mstop, 1000);
 		switch (reslt)
 		{
 		case WAIT_OBJECT_0:
+			goto mExit;
 			break;
 		case WAIT_OBJECT_0 + 1:
 		case WAIT_TIMEOUT:
+			break;
 		default:
 			goto mExit;
 		}
 		EnterCriticalSection(&CCExecute->mlistlock);
 		for (;;)
 		{
+			//printf("%d\r\n",CCExecute->mdatalist.size());
 			if (CCExecute->mdatalist.empty())
 			{
 				break;
@@ -343,8 +376,9 @@ DWORD WINAPI CExecute::DataManageThread(void* param)
 					msend.type = SOCKET_STOP;
 					//发送消息表示socket断开;
 					sendto(CCExecute->m_udp_socket,(char*)&msend, sizeof(msend), 0, (sockaddr*)_sockaddr, sizeof(sockaddr_in));
-					LeaveCriticalSection(&CCExecute->mlistlock);
 					free(_packet);
+					LeaveCriticalSection(&CCExecute->mlistlock);
+					
 					//CCExecute->mdatalist.pop_front();
 					goto mExit;
 				}
@@ -363,13 +397,14 @@ DWORD WINAPI CExecute::DataManageThread(void* param)
 						recvsuccess = true;
 					}
 				}
-				LeaveCriticalSection(&CCExecute->mlistlock);
 				free(_packet);
+				LeaveCriticalSection(&CCExecute->mlistlock);
+				
 				
 				goto mExit;
 				break;
 			case FILE_UPLOAD_DATA:
-				printf("接收到文件数据... ...\r\n");
+				//printf("接收到文件数据... ...\r\n");
 				size_write = fwrite(_packet->data, sizeof(char), _packet->datalen, pfile);
 				if (size_write != _packet->datalen)
 				{
@@ -378,29 +413,30 @@ DWORD WINAPI CExecute::DataManageThread(void* param)
 					msend.type = SOCKET_STOP;
 					//发送消息表示socket断开;
 					sendto(CCExecute->m_udp_socket, (char*)&msend, sizeof(msend), 0, (sockaddr*)_sockaddr, sizeof(sockaddr_in));
-					LeaveCriticalSection(&CCExecute->mlistlock);
 					free(_packet);
+					LeaveCriticalSection(&CCExecute->mlistlock);
+					
 					//CCExecute->mdatalist.pop_front();
 					goto mExit;
 				}
 				break;
 			case FILE_UPLOAD_ERROR:
+			case FILE_TRANSFER_OVER:
 				printf("传输过程出错\r\n");
-				LeaveCriticalSection(&CCExecute->mlistlock);
 				free(_packet);
+				LeaveCriticalSection(&CCExecute->mlistlock);
+				
 				//CCExecute->mdatalist.pop_front();
 				goto mExit;
 				break;
 			default:
-				printf("消息类型未知\r\n");
+				printf("消息类型未知:%d %d\r\n", _packet->type, _packet->datalen);
 				LeaveCriticalSection(&CCExecute->mlistlock);
-				free(_packet);
-				//CCExecute->mdatalist.pop_front();
-				goto mExit;
 				break;
 			}
+				
+			//printf("packet: %d %d\r\n",_packet->type, _packet->datalen);
 			free(_packet);
-			//CCExecute->mdatalist.pop_front();
 			
 		}
 		LeaveCriticalSection(&CCExecute->mlistlock);
@@ -421,10 +457,12 @@ mExit:
 	{
 		free(tfile);
 	}
-	printf("退出数据处理线程\r\n");
-	closesocket(CCExecute->msocket);
+	
 	::InterlockedDecrement(&CCExecute->mrun);
+	//先释放;
 	pSocketRecv->removelist(CCExecute->msocket);
+	closesocket(CCExecute->msocket);
+	printf("退出数据处理线程: %d\r\n", CCExecute->msocket);
 	pSocketRecv->Release();
 	return 0;
 }
@@ -434,46 +472,74 @@ DWORD WINAPI CExecute::RecvCallBackThread(void *param)
 	CExecute* CCExecute = (CExecute*)param;
 	SocketRecv* pSocketRecv = SocketRecvGet();
 	
-	pfile_packet  mrecv;
+	char*		  mrecv;
 	TCHAR*		  tfile = NULL;
 	FILE*		  hFile = NULL;
-
+	char recvbuffer[FILE_PACKET_SIZE*2 + 1] = {""};
+	char spacket[FILE_PACKET_SIZE] = {""};
+	unsigned int  recvcounter = 0;
+	unsigned int  pointstn = 0;
+	unsigned int  inputlen = 0;
 	fd_set	m_set;
 	int		reslt;
 	timeval m_time = {5000, 0};
-	unsigned long ul = 1;
+	unsigned long ul = 0;
 	if (pSocketRecv == NULL)
 	{
 		::InterlockedDecrement(&CCExecute->mrun);
 		return 0;
 	}
+	
 
 	pSocketRecv->AddRef();
-	//int ret = ioctlsocket(CCExecute->msocket, FIONBIO, (unsigned long *)&ul);
-	
-	/*if (ret < 0)
-	{
-		printf("ioctlsocket error %d\r\n", GetLastError());
-		goto mExit;
-	}*/
-
+	mrecv = (char*)file_packet_alloc();
 	while (true)
 	{
 		FD_ZERO(&m_set);
 		FD_SET(CCExecute->msocket, &m_set);
-		//设置5秒超时;
+       //设置5秒超时;
 		reslt = select(CCExecute->msocket + 1, &m_set, NULL, NULL, &m_time);
-		
 		if (reslt > 0 || !FD_ISSET(CCExecute->msocket, &m_set))
 		{
-			//printf("接收到一个消息\r\n");
-			mrecv = file_packet_alloc();
-			recv(CCExecute->msocket, (char*)mrecv, FILE_PACKET_SIZE, 0);
-			SetEvent(CCExecute->mevent);
-			EnterCriticalSection(&CCExecute->mlistlock);
-			CCExecute->mdatalist.push_back(mrecv);
-			LeaveCriticalSection(&CCExecute->mlistlock);
 			
+			
+			int recv_size = recv(CCExecute->msocket, recvbuffer, sizeof(recvbuffer) - 1, 0);
+			//printf("从缓存中读取：%d个字节\r\n",recv_size);
+			if (recv_size <= 0)
+			{
+				printf("tcp传输通道终止:%d \r\n", GetLastError());
+				EnterCriticalSection(&CCExecute->mlistlock);
+				reslt = FILE_TRANSFER_OVER;
+				memcpy(mrecv , &reslt, sizeof(FILE_TRANSFER_OVER));
+				CCExecute->mdatalist.push_back((pfile_packet)mrecv);
+				LeaveCriticalSection(&CCExecute->mlistlock);
+				break;
+			}
+			EnterCriticalSection(&CCExecute->mlistlock);
+			
+			//拼接数据包
+			while (recv_size > pointstn)
+			{
+				inputlen = (recv_size - pointstn > FILE_PACKET_SIZE - recvcounter) ? FILE_PACKET_SIZE - recvcounter: recv_size - pointstn;
+				//接收的数据大于包的长度;
+				memcpy(mrecv + recvcounter, recvbuffer + pointstn, inputlen);
+				pointstn += inputlen;
+				recvcounter += inputlen;
+
+				if (recvcounter == FILE_PACKET_SIZE)
+				{
+					//memcpy(mrecv, spacket, FILE_PACKET_SIZE);
+					CCExecute->mdatalist.push_back((pfile_packet)mrecv);
+					mrecv = (char*)file_packet_alloc();
+					//memset(spacket, 0, FILE_PACKET_SIZE);
+					recvcounter = 0;
+				}
+
+			}
+			pointstn = 0;
+			LeaveCriticalSection(&CCExecute->mlistlock);
+			SetEvent(CCExecute->mevent);
+			memset(recvbuffer, 0, sizeof(recvbuffer));
 		}
 		else
 		{

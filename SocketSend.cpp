@@ -256,7 +256,7 @@ bool SocketSend::sendfile(const TCHAR* path, const TCHAR* filename)
 	DWORD dwRead = 0;
 	FILE* hFile = NULL;
 	HANDLE hEvent[] = {this->hSocketStart, this->hUploadBegin, this->hSocketStop};
-	fd_set mset;
+	//fd_set mset;
 
 	if (path == NULL || filename == NULL)
 	{
@@ -291,17 +291,17 @@ bool SocketSend::sendfile(const TCHAR* path, const TCHAR* filename)
 	{
 		//五秒等待延时;
 		reslt = WaitForMultipleObjects(3, hEvent, FALSE, 5000);
+		
 		switch (reslt)
 		{
 		case WAIT_OBJECT_0:
-			pname = (pfile_packet)malloc(_tcslen(filename)*sizeof(TCHAR) + sizeof(file_packet));
-			ZeroMemory(pname, _tcslen(filename)*sizeof(TCHAR) + sizeof(file_packet));
+			pname = file_packet_alloc();
 			pname->datalen = _tcslen(filename)*sizeof(TCHAR);
 			pname->type = FILE_NAME;
 
 			memcpy(pname->data, filename, pname->datalen);
 
-			reslt = send(this->tcptransfer, (char*)pname, pname->datalen + sizeof(file_packet), 0);
+			reslt = send(this->tcptransfer, (char*)pname, FILE_PACKET_SIZE, 0);
 			//ResetEvent(this->hSocketStart);
 			if (reslt < 0)
 			{
@@ -313,7 +313,7 @@ bool SocketSend::sendfile(const TCHAR* path, const TCHAR* filename)
 		case WAIT_OBJECT_0 + 1:
 			size_read = fread(psend->data, sizeof(char), psend->datalen, hFile);
 			
-			//printf("读取了:%d个字节 %d\r\n", size_read, GetLastError());
+			printf("读取了:%d个字节 %d\r\n", size_read, GetLastError());
 			//读完;
 			if (size_read < psend->datalen)
 			{
@@ -337,11 +337,11 @@ bool SocketSend::sendfile(const TCHAR* path, const TCHAR* filename)
 				psend->datalen = size_read;		
 			}
 
-			FD_ZERO(&mset);
-			FD_SET(this->tcptransfer, &mset);
+			//FD_ZERO(&mset);
+			//FD_SET(this->tcptransfer, &mset);
 			
-			select(this->tcptransfer, NULL, &mset, NULL, 0);
-			reslt = send(this->tcptransfer, (char*)psend, sizeof(file_packet) + psend->datalen, 0);
+			//select(this->tcptransfer, NULL, &mset, NULL, 0);
+			reslt = send(this->tcptransfer, (char*)psend, FILE_PACKET_SIZE, 0);
 			if (reslt < 0)
 			{
 				printf("发送出错：%d \r\n", GetLastError());
@@ -358,7 +358,8 @@ bool SocketSend::sendfile(const TCHAR* path, const TCHAR* filename)
 				free(psend);
 				return true;
 			}
-
+			memset(psend, 0, FILE_PACKET_SIZE);
+			psend->type = FILE_UPLOAD_DATA;
 			psend->datalen = FILE_PACKET_SIZE - sizeof(file_packet);
 
 			break;

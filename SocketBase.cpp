@@ -65,14 +65,14 @@ bool SocketBase::init(bool isTcp, short port)
 	ret = ioctlsocket(this->socket_id, FIONBIO, (unsigned long *)&ul);
 	if (ret < 0)
 	{
-		closesocket(this->socket_id);
+		_closesocket(this->socket_id);
 		return false;
 	}
 
 	if (bind(this->socket_id, (sockaddr*)&(this->server_id), sizeof(sockaddr_in)) < 0)
 	{
 		printf("bind error: %d\r\n", WSAGetLastError());
-		closesocket(this->socket_id);
+		_closesocket(this->socket_id);
 		return false;
 	}
 	return true;
